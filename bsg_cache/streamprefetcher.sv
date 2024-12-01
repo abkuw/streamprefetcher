@@ -29,10 +29,10 @@ module stream_prefetcher #(
     } stream_entry_t;
 
     // Stream table
-    stream_entry_t stream_table[STREAM_TABLE_SIZE];
+    stream_entry_t [STREAM_TABLE_SIZE-1:0] stream_table;
 
     // Prefetch buffer
-    logic [addr_width_p-1:0] prefetch_buffer[STREAM_TABLE_SIZE];
+    logic [STREAM_TABLE_SIZE-1:0][addr_width_p-1:0] prefetch_buffer;
     logic [STREAM_TABLE_SIZE-1:0] prefetch_buffer_valid;
 
     // FSM states
@@ -66,9 +66,12 @@ module stream_prefetcher #(
 
     // Next state and output logic
     always_comb begin
-        next_state = current_state;
-        next_prefetch_addr = prefetch_addr_o;
+        // Default assignments to prevent latches
+        current_stream = '0;
+        stride = '0;
+        next_prefetch_addr = '0;
         next_prefetch_v = 1'b0;
+        next_state = current_state;
 
         case (current_state)
             IDLE: begin
@@ -79,7 +82,7 @@ module stream_prefetcher #(
                 for (int i = 0; i < STREAM_TABLE_SIZE; i++) begin
                     if (stream_table[i].valid && 
                         (miss_addr_i > stream_table[i].last_address) && 
-                        (miss_addr_i - stream_table[i].last_address <= 64)) begin
+                        ((miss_addr_i - stream_table[i].last_address) <= 64)) begin
                         current_stream = i[2:0];
                         next_state = UPDATE_STREAM;
                         break;
@@ -91,14 +94,9 @@ module stream_prefetcher #(
             UPDATE_STREAM: begin
                 if (stream_table[current_stream].miss_count == 2'd1) begin
                     next_state = PREFETCH;
-                    stride = miss_addr_i - stream_table[current_stream].start_address;
+                    stride = miss_addr_i - stream_table[current_stream].last_address;
                     next_prefetch_addr = miss_addr_i + stride;
                     next_prefetch_v = 1'b1;
-
-                    if (dma_pkt_v_i) begin
-                        prefetch_buffer[current_stream] <= next_prefetch_addr;
-                        prefetch_buffer_valid[current_stream] <= 1'b1;
-                    end
                 end else begin
                     next_state = IDLE;
                 end
@@ -125,32 +123,41 @@ module stream_prefetcher #(
     // Output and state update logic
     always_ff @(posedge clk_i or posedge reset_i) begin
         if (reset_i) begin
-            foreach (stream_table[i]) begin
-                stream_table[i] <= '0;
-            end
-            
             prefetch_addr_o <= '0;
             prefetch_v_o <= 1'b0;
             prefetch_data_o <= '0;
-
-            foreach(prefetch_buffer[i]) begin 
-                prefetch_buffer[i] <= '0; 
-                prefetch_buffer_valid[i] <= '0; 
-            end
             
+            for (int i = 0; i < STREAM_TABLE_SIZE; i++) begin
+                stream_table[i].start_address <= '0;
+                stream_table[i].last_address <= '0;
+                stream_table[i].miss_count <= 2'd0;
+                stream_table[i].valid <= 1'b0;
+                prefetch_buffer[i] <= '0;
+                prefetch_buffer_valid[i] <= 1'b0;
+            end
         end else begin
-            prefetch_addr_o <= next_prefetch_addr; 
+            prefetch_addr_o <= next_prefetch_addr;
             prefetch_v_o <= next_prefetch_v;
+
+            if (dma_pkt_v_i && next_prefetch_v) begin
+                prefetch_buffer[current_stream] <= next_prefetch_addr;
+                prefetch_buffer_valid[current_stream] <= 1'b1;
+            end
+
+            if (cache_pkt_v_i) begin
+                for (int i = 0; i < STREAM_TABLE_SIZE; i++) begin
+                    if (prefetch_buffer_valid[i] && (cache_pkt_addr_i == prefetch_buffer[i])) begin
+                        prefetch_data_o <= prefetch_buffer[i];
+                        prefetch_buffer_valid[i] <= 1'b0;
+                        break;
+                    end
+                end
+            end
 
             case (current_state)
                 UPDATE_STREAM: begin
                     stream_table[current_stream].last_address <= miss_addr_i; 
-                    stream_table[current_stream].miss_count <= stream_table[current_stream].miss_count + 1'b1;
-
-                    if(dma_pkt_v_i) begin 
-                        prefetch_buffer[current_stream] <= next_prefetch_addr;
-                        prefetch_buffer_valid[current_stream] <= 1'b1; 
-                    end
+                    stream_table[current_stream].miss_count <= stream_table[current_stream].miss_count + 1;
                 end
                 
                 CREATE_STREAM: begin
@@ -162,12 +169,7 @@ module stream_prefetcher #(
                 
                 default: ;
             endcase
-            
-            if(cache_pkt_v_i && cache_pkt_addr_i == prefetch_buffer[current_stream]) begin
-                prefetch_data_o <= prefetch_buffer[current_stream]; 
-                prefetch_buffer_valid[current_stream] <= 1'b0;
-            end 
         end 
-    end 
+    end
 
 endmodule
