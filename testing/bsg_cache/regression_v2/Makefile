@@ -1,11 +1,13 @@
-include ../../../../bsg_cadenv/cadenv.mk
+# include ../../../../bsg_cadenv/cadenv.mk
 export BASEJUMP_STL_DIR = $(abspath ../../..)
 
-USE_VERILATOR ?= 0
+USE_VERILATOR ?= 1
 WAVE ?= 0
 
 INCDIR =  +incdir+$(BASEJUMP_STL_DIR)/bsg_misc
 INCDIR += +incdir+$(BASEJUMP_STL_DIR)/bsg_cache
+INCDIR += +incdir+$(BASEJUMP_STL_DIR)/streamprefetcher
+
 
 VCS_FLAGS =  -full64 +lint=all,noSVA-UA,noSVA-NSVU,noVCDE
 ifeq ($(WAVE),1)

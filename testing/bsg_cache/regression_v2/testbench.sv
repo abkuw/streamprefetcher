@@ -74,7 +74,43 @@ module testbench();
   logic dma_data_v_lo;
   logic dma_data_yumi_li;
 
-  // DUT
+  // // DUT
+  // bsg_cache #(
+  //   .addr_width_p(addr_width_p)
+  //   ,.data_width_p(data_width_p)
+  //   ,.block_size_in_words_p(block_size_in_words_p)
+  //   ,.sets_p(sets_p)
+  //   ,.ways_p(ways_p)
+  //   ,.amo_support_p(amo_support_level_arithmetic_lp)
+  //   ,.word_tracking_p(word_tracking_p)
+  // ) DUT (
+  //   .clk_i(clk)
+  //   ,.reset_i(reset)
+
+  //   ,.cache_pkt_i(cache_pkt)
+  //   ,.v_i(v_li)
+  //   ,.yumi_o(yumi_lo)
+
+  //   ,.data_o(cache_data_lo)
+  //   ,.v_o(v_lo)
+  //   ,.yumi_i(yumi_li)
+
+  //   ,.dma_pkt_o(dma_pkt)
+  //   ,.dma_pkt_v_o(dma_pkt_v_lo)
+  //   ,.dma_pkt_yumi_i(dma_pkt_yumi_li)
+
+  //   ,.dma_data_i(dma_data_li)
+  //   ,.dma_data_v_i(dma_data_v_li)
+  //   ,.dma_data_ready_and_o(dma_data_ready_and_lo)
+
+  //   ,.dma_data_o(dma_data_lo)
+  //   ,.dma_data_v_o(dma_data_v_lo)
+  //   ,.dma_data_yumi_i(dma_data_yumi_li)
+
+  //   ,.v_we_o()
+  // );
+
+    // DUT
   bsg_cache #(
     .addr_width_p(addr_width_p)
     ,.data_width_p(data_width_p)
@@ -107,7 +143,8 @@ module testbench();
     ,.dma_data_v_o(dma_data_v_lo)
     ,.dma_data_yumi_i(dma_data_yumi_li)
 
-    ,.v_we_o()
+    ,.miss_address(miss_address)
+    ,.miss(miss)
   );
 
   // random yumi generator
@@ -154,6 +191,11 @@ module testbench();
 
 
   // trace replay
+  logic [addr_width_p-1:0] miss_address;
+  logic miss;
+  logic hit_v;
+
+  assign hit_v = v_lo & ~miss;
   localparam rom_addr_width_lp = 26;
   localparam ring_width_lp = `bsg_cache_pkt_width(addr_width_p,data_width_p);
 

@@ -3,7 +3,7 @@
 echo "start test" > test_result.log
 run_test() {
   make clean
-  make -j8  YUMI_MIN_DELAY_P=$1  \
+  make -j4  YUMI_MIN_DELAY_P=$1  \
             YUMI_MAX_DELAY_P=$2  \
             DMA_READ_DELAY_P=$3  \
             DMA_WRITE_DELAY_P=$4 \

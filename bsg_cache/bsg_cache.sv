@@ -14,6 +14,7 @@
 
 `include "bsg_defines.sv"
 `include "bsg_cache.svh"
+`include "streamprefetcher.sv"
 
 module bsg_cache
   import bsg_cache_pkg::*;
@@ -65,7 +66,9 @@ module bsg_cache
     // TL to TV stage. It can be used for some metadata outside the cache that
     // needs to move together with the corresponding instruction. The usage of
     // this signal is totally optional.
-    ,output logic v_we_o
+    ,output logic [addr_width_p-1:0] miss_address
+    ,output logic miss
+    
   );
 
 
@@ -449,7 +452,7 @@ end
     ,.block_size_in_words_p(block_size_in_words_p)
     ,.ways_p(ways_p)
     ,.word_tracking_p(word_tracking_p)
-  ) miss (
+  ) miss_inst (
     .clk_i(clk_i)
     ,.reset_i(reset_i)
     
@@ -677,6 +680,64 @@ end
     ,.sel_i(decode_v_r.data_size_op[0+:lg_data_sel_mux_els_lp])
     ,.data_o(sbuf_mask_in)
   );
+  // logic [addr_width_p-1:0] miss_address;
+  // logic miss;
+  logic [addr_width_p-1:0] prefetch_address;
+  logic prefetch_valid;
+  logic [data_width_p-1:0] prefetch_buffer_data_out;
+  logic hit_v;
+  logic v_we_o;
+  logic miss_signal;
+
+  // Instantiate stream prefetcher
+  stream_prefetcher #(
+    .addr_width_p(addr_width_p),
+    .data_width_p(data_width_p)
+  ) stream_prefetcher_inst (
+    .clk_i(clk_i),
+    .reset_i(reset_i),
+    .miss_addr_i(miss_address),
+    .miss_v_i(miss_signal),
+    .dma_pkt_v_i(dma_pkt_v_o),
+    .cache_pkt_v_i(v_i),
+    .cache_pkt_addr_i(cache_pkt.addr),
+    .prefetch_addr_o(prefetch_address),
+    .prefetch_v_o(prefetch_valid),
+    .prefetch_data_o(prefetch_buffer_data_out)
+  );
+
+// Connect miss signals
+  assign miss_address = addr_v_r;
+  assign miss = v_o & ~yumi_i & ~hit_v;
+
+  // Modify miss handling logic to consider prefetched data
+  always_comb begin
+    if (miss_v) begin
+      if (prefetch_valid & (addr_v_r == prefetch_address)) begin
+        // Use prefetched data
+        data_mem_data_li = {ways_p{prefetch_buffer_data_out}};
+        // Additional logic to handle prefetched data
+      end else begin
+        // Existing miss handling logic
+      end
+    end
+  end
+  // Implement logic to handle prefetch requests
+  logic prefetch_ready;
+  assign prefetch_ready = ~v_o & ~miss_v;
+
+  always_ff @(posedge clk_i) begin
+    if (reset_i) begin
+      // Reset logic
+    end else if (prefetch_valid & prefetch_ready) begin
+      // Handle prefetch request
+      addr_v_r <= prefetch_address;
+      miss <= 1'b1;
+      // Additional logic to initiate prefetch
+    end
+  end
+
+
 
   //
   // Atomic operations
