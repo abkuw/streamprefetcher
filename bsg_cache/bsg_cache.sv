@@ -69,6 +69,41 @@ module bsg_cache
     ,output logic [addr_width_p-1:0] miss_address
     ,output logic miss
     
+  )  (
+    input clk_i
+    ,input reset_i
+
+    ,input [bsg_cache_pkt_width_lp-1:0] cache_pkt_i
+    ,input v_i
+    ,output logic yumi_o
+    
+    ,output logic [data_width_p-1:0] data_o
+    ,output logic v_o
+    ,input yumi_i
+
+    ,output logic [bsg_cache_dma_pkt_width_lp-1:0] dma_pkt_o
+    ,output logic dma_pkt_v_o
+    ,input dma_pkt_yumi_i
+
+    ,input [dma_data_width_p-1:0] dma_data_i
+    ,input dma_data_v_i
+    ,output logic dma_data_ready_and_o
+
+    ,output logic [dma_data_width_p-1:0] dma_data_o
+    ,output logic dma_data_v_o
+    ,input dma_data_yumi_i
+
+    ,output logic prefetch_dma_req_o;
+    ,output logic [addr_width_p-1:0] prefetch_dma_addr_o;
+
+
+    // this signal tells the outside world that the instruction is moving from
+    // TL to TV stage. It can be used for some metadata outside the cache that
+    // needs to move together with the corresponding instruction. The usage of
+    // this signal is totally optional.
+    ,output logic [addr_width_p-1:0] miss_address
+    ,output logic miss
+    
   );
 
 
@@ -564,6 +599,17 @@ end
 
     ,.dma_evict_o(dma_evict_lo)
   ); 
+  always_comb begin
+    if (prefetch_dma_req && ~dma_busy_o) begin
+      dma_pkt_o = prefetch_dma_addr_o; // Send prefetch address to DMA
+      dma_pkt_v_o = 1'b1;
+    end else begin
+      // Handle normal DMA logic for cache miss
+      // Set `dma_pkt_o` and `dma_pkt_v_o` appropriately
+    end
+  end
+
+
 
   // store buffer
   //
@@ -680,64 +726,48 @@ end
     ,.sel_i(decode_v_r.data_size_op[0+:lg_data_sel_mux_els_lp])
     ,.data_o(sbuf_mask_in)
   );
-  // logic [addr_width_p-1:0] miss_address;
-  // logic miss;
+   // Instantiate stream prefetcher
   logic [addr_width_p-1:0] prefetch_address;
   logic prefetch_valid;
   logic [data_width_p-1:0] prefetch_buffer_data_out;
-  logic hit_v;
-  logic v_we_o;
-  logic miss_signal;
 
-  // Instantiate stream prefetcher
-  stream_prefetcher #(
+stream_prefetcher #(
     .addr_width_p(addr_width_p),
     .data_width_p(data_width_p)
-  ) stream_prefetcher_inst (
+) stream_prefetcher_inst (
     .clk_i(clk_i),
     .reset_i(reset_i),
     .miss_addr_i(miss_address),
-    .miss_v_i(miss_signal),
-    .dma_pkt_v_i(dma_pkt_v_o),
+    .miss_v_i(miss),
+    .dma_ready_i(~dma_busy_o), // Indicates DMA availability
+    .prefetch_dma_req_o(prefetch_dma_req),
+    .prefetch_dma_addr_o(prefetch_dma_addr),
     .cache_pkt_v_i(v_i),
-    .cache_pkt_addr_i(cache_pkt.addr),
+    .cache_pkt_addr_i(cache_pkt_i[addr_width_p-1:0]),
     .prefetch_addr_o(prefetch_address),
     .prefetch_v_o(prefetch_valid),
     .prefetch_data_o(prefetch_buffer_data_out)
-  );
+);
 
-// Connect miss signals
-  assign miss_address = addr_v_r;
-  assign miss = v_o & ~yumi_i & ~hit_v;
 
-  // Modify miss handling logic to consider prefetched data
-  always_comb begin
-    if (miss_v) begin
-      if (prefetch_valid & (addr_v_r == prefetch_address)) begin
-        // Use prefetched data
-        data_mem_data_li = {ways_p{prefetch_buffer_data_out}};
-        // Additional logic to handle prefetched data
+  // Miss handling with prefetcher integration
+  logic [data_width_p-1:0] data_mem_data_li;
+   always_comb begin
+    if (miss) begin
+      if (prefetch_valid && (prefetch_address == cache_pkt_i[addr_width_p-1:0])) begin
+        // Use prefetched data if available
+        data_mem_data_li = prefetch_buffer_data_out;
       end else begin
-        // Existing miss handling logic
+        // Handle miss as usual
+        data_mem_data_li = '0; // Placeholder for regular miss handling
       end
-    end
-  end
-  // Implement logic to handle prefetch requests
-  logic prefetch_ready;
-  assign prefetch_ready = ~v_o & ~miss_v;
-
-  always_ff @(posedge clk_i) begin
-    if (reset_i) begin
-      // Reset logic
-    end else if (prefetch_valid & prefetch_ready) begin
-      // Handle prefetch request
-      addr_v_r <= prefetch_address;
-      miss <= 1'b1;
-      // Additional logic to initiate prefetch
+    end else begin
+      data_mem_data_li = '0; // No miss
     end
   end
 
-
+  // Modify miss signal to consider prefetched data
+  assign miss = (v_i & ~yumi_i & ~prefetch_valid & (prefetch_address != cache_pkt_i[addr_width_p-1:0]));
 
   //
   // Atomic operations
@@ -1009,8 +1039,35 @@ end
   );
 
   // final output mux
+  // always_comb begin
+  //   if (retval_op_v) begin
+  //     if (decode_v_r.taglv_op) begin
+  //       data_o = {{(data_width_p-2){1'b0}}, lock_v_r[addr_way_v], valid_v_r[addr_way_v]};
+  //     end
+  //     else if (decode_v_r.tagla_op) begin
+  //       data_o = {tag_v_r[addr_way_v], {(sets_p>1){addr_index_v}}, {(block_offset_width_lp){1'b0}}};
+  //     end
+  //     else if (decode_v_r.mask_op) begin
+  //       data_o = ld_data_masked;
+  //     end
+  //     else begin
+  //       data_o = ld_data_final_lo;
+  //     end
+  //   end
+  //   else begin
+  //     data_o = '0;
+  //   end 
+  // end 
+
+  // final output mux with prefetch handling
   always_comb begin
-    if (retval_op_v) begin
+    if (prefetch_valid && (prefetch_address == cache_pkt_i[addr_width_p-1:0])) begin
+      // Use prefetched data
+      data_o = prefetch_buffer_data_out;
+      v_o = 1'b1;
+    end
+    else if (retval_op_v) begin
+      // Normal cache operation
       if (decode_v_r.taglv_op) begin
         data_o = {{(data_width_p-2){1'b0}}, lock_v_r[addr_way_v], valid_v_r[addr_way_v]};
       end
@@ -1023,11 +1080,14 @@ end
       else begin
         data_o = ld_data_final_lo;
       end
+      v_o = 1'b1;
     end
     else begin
       data_o = '0;
+      v_o = 1'b0;
     end 
   end 
+
 
   // ctrl logic
   //

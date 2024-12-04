@@ -57,6 +57,7 @@ module bsg_cache_miss
     ,output bsg_cache_dma_cmd_e dma_cmd_o
     ,output logic [lg_ways_lp-1:0] dma_way_o
     ,output logic [addr_width_p-1:0] dma_addr_o
+    ,output logic dma_busy_o; // track dma busy
     ,input dma_done_i
 
     // to dma engine for flopping track_mem's read data
@@ -323,12 +324,29 @@ module bsg_cache_miss
         // On track miss, the chosen way is the tag hit way.
         chosen_way_n = track_miss_i ? tag_hit_way_id_i : (invalid_exist ? invalid_way_id : lru_way_id);
 
-        dma_cmd_o = e_dma_send_fill_addr;          
+        if (prefetch_dma_req_i) begin
+        // Handle prefetch DMA request
+        dma_cmd_o = e_dma_send_fill_addr;
+        dma_addr_o = prefetch_dma_addr_i;
+        // Reset prefetch_dma_req_i to indicate the request was serviced
+        end else begin
+        // Handle cache miss normally
+        dma_cmd_o = e_dma_send_fill_addr;
         dma_addr_o = {
-          addr_tag_v,
-          {(sets_p>1){addr_index_v}},
-          {(block_offset_width_lp){1'b0}}
+            addr_tag_v,
+            {(sets_p > 1) ? addr_index_v},
+            {(block_offset_width_lp) {1'b0}}
         };
+        end
+        miss_state_n = dma_done_i ? (stat_info_in.dirty[chosen_way_n] && valid_v_i[chosen_way_n] ? SEND_EVICT_ADDR : GET_FILL_DATA) : SEND_FILL_ADDR;
+      end
+
+        // dma_cmd_o = e_dma_send_fill_addr;          
+        // dma_addr_o = {
+        //   addr_tag_v,
+        //   {(sets_p>1){addr_index_v}},
+        //   {(block_offset_width_lp){1'b0}}
+        // };
 
         // if the chosen way is dirty and valid, then evict.
         miss_state_n = dma_done_i
@@ -587,6 +605,9 @@ module bsg_cache_miss
       track_data_we_o <= track_mem_v_o & ~track_mem_w_o;
     end
   end
+
+// Assign dma_busy_o signal
+assign dma_busy_o = (miss_state_r != START && miss_state_r != DONE);
 
 endmodule
 

@@ -4,16 +4,19 @@ module stream_prefetcher #(
     parameter addr_width_p = 32,
     parameter data_width_p = 32
 ) (
-    input logic clk_i,
-    input logic reset_i,
-    input logic [addr_width_p-1:0] miss_addr_i,
-    input logic miss_v_i,
+    input logic clk_i, //clk
+    input logic reset_i, //rest
+    input logic [addr_width_p-1:0] miss_addr_i, //miss_adress
+    input logic miss_v_i,//if miss is true
     input logic dma_pkt_v_i,
     input logic cache_pkt_v_i,
     input logic [addr_width_p-1:0] cache_pkt_addr_i,
     output logic [addr_width_p-1:0] prefetch_addr_o,
     output logic prefetch_v_o,
-    output logic [data_width_p-1:0] prefetch_data_o
+    output logic [data_width_p-1:0] prefetch_data_o,
+    output logic prefetch_dma_req_o,
+    output logic [addr_width_p-1:0] prefetch_dma_addr_o
+
 );
 
     // Parameters
@@ -32,7 +35,7 @@ module stream_prefetcher #(
     stream_entry_t [STREAM_TABLE_SIZE-1:0] stream_table;
 
     // Prefetch buffer
-    logic [STREAM_TABLE_SIZE-1:0][addr_width_p-1:0] prefetch_buffer;
+    logic [STREAM_TABLE_SIZE-1:0][data_width_p-1:0] prefetch_buffer;
     logic [STREAM_TABLE_SIZE-1:0] prefetch_buffer_valid;
 
     // FSM states
@@ -53,14 +56,24 @@ module stream_prefetcher #(
     logic [addr_width_p-1:0] stride;
     logic [addr_width_p-1:0] next_prefetch_addr;
     logic next_prefetch_v;
+    logic miss;
+    logic miss_sync;
 
     // State transition logic
     always_ff @(posedge clk_i or posedge reset_i) begin
         if (reset_i) begin
             current_state <= IDLE;
             prefetch_buffer_valid <= '0;
+            miss <= 1'b0;
+            miss_sync <= 1'b0;
         end else begin
             current_state <= next_state;
+            if (next_state == PREFETCH) begin
+                miss <= 1'b1; // next state if prefetch , toggle miss to 1
+            end else begin
+                miss <= 1'b0;
+            end
+            miss_sync <= miss_v_i; // 
         end
     end
 
@@ -75,7 +88,7 @@ module stream_prefetcher #(
 
         case (current_state)
             IDLE: begin
-                if (miss_v_i) next_state = CHECK_STREAM;
+                if (miss_sync) next_state = CHECK_STREAM;
             end
 
             CHECK_STREAM: begin
@@ -113,8 +126,13 @@ module stream_prefetcher #(
             end
 
             PREFETCH: begin
+                if (dma_ready_i && next_prefetch_v) begin
+                    // Initiate DMA request for the prefetch address
+                    prefetch_dma_req_o = 1'b1;
+                    prefetch_dma_addr_o = next_prefetch_addr;
+                end
                 next_state = IDLE;
-            end
+            end            
 
             default: next_state = IDLE;
         endcase
@@ -122,7 +140,7 @@ module stream_prefetcher #(
 
     // Output and state update logic
     always_ff @(posedge clk_i or posedge reset_i) begin
-        if (reset_i) begin
+        if (reset_i) begin //reset logic
             prefetch_addr_o <= '0;
             prefetch_v_o <= 1'b0;
             prefetch_data_o <= '0;
