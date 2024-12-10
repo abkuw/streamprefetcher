@@ -53,6 +53,7 @@ module bsg_cache
     ,output logic [bsg_cache_dma_pkt_width_lp-1:0] dma_pkt_o
     ,output logic dma_pkt_v_o
     ,input dma_pkt_yumi_i
+    ,output logic dma_busy_o
 
     ,input [dma_data_width_p-1:0] dma_data_i
     ,input dma_data_v_i
@@ -92,9 +93,10 @@ module bsg_cache
     ,output logic [dma_data_width_p-1:0] dma_data_o
     ,output logic dma_data_v_o
     ,input dma_data_yumi_i
+    ,output logic dma_busy_o; // Indicate if DMA is occupied
 
     ,output logic prefetch_dma_req_o;
-    ,output logic [addr_width_p-1:0] prefetch_dma_addr_o;
+    ,output logic [addr_width_p-1:0] prefetch_dma_addr_o
 
 
     // this signal tells the outside world that the instruction is moving from
@@ -599,15 +601,32 @@ end
 
     ,.dma_evict_o(dma_evict_lo)
   ); 
+  // always_comb begin
+  //   if (prefetch_dma_req && ~dma_busy_o) begin
+  //     dma_pkt_o = prefetch_dma_addr_o; // Send prefetch address to DMA
+  //     dma_pkt_v_o = 1'b1;
+  //   end else begin
+  //     // Handle normal DMA logic for cache miss
+  //     // Set `dma_pkt_o` and `dma_pkt_v_o` appropriately
+  //   end
+  // end\
+  assign dma_busy_o = dma_pkt_v_o; // DMA is busy when any request is active
+
   always_comb begin
-    if (prefetch_dma_req && ~dma_busy_o) begin
-      dma_pkt_o = prefetch_dma_addr_o; // Send prefetch address to DMA
-      dma_pkt_v_o = 1'b1;
+    if (miss_dma_req_o && !dma_busy_o) begin
+        // Prioritize miss handling
+        dma_pkt_o = miss_dma_pkt;
+        dma_pkt_v_o = miss_dma_pkt_v_o;
+    end else if (prefetch_dma_req_o && !dma_busy_o) begin
+        // Handle prefetch request
+        dma_pkt_o = prefetch_dma_pkt;
+        dma_pkt_v_o = 1'b1;
     end else begin
-      // Handle normal DMA logic for cache miss
-      // Set `dma_pkt_o` and `dma_pkt_v_o` appropriately
+        dma_pkt_o = '0;
+        dma_pkt_v_o = 1'b0;
     end
-  end
+end
+
 
 
 
@@ -731,6 +750,23 @@ end
   logic prefetch_valid;
   logic [data_width_p-1:0] prefetch_buffer_data_out;
 
+// stream_prefetcher #(
+//     .addr_width_p(addr_width_p),
+//     .data_width_p(data_width_p)
+// ) stream_prefetcher_inst (
+//     .clk_i(clk_i),
+//     .reset_i(reset_i),
+//     .miss_addr_i(miss_address),
+//     .miss_v_i(miss),
+//     .dma_ready_i(~dma_busy_o), // Indicates DMA availability
+//     .prefetch_dma_req_o(prefetch_dma_req),
+//     .prefetch_dma_addr_o(prefetch_dma_addr),
+//     .cache_pkt_v_i(v_i),
+//     .cache_pkt_addr_i(cache_pkt_i[addr_width_p-1:0]),
+//     .prefetch_addr_o(prefetch_address),
+//     .prefetch_v_o(prefetch_valid),
+//     .prefetch_data_o(prefetch_buffer_data_out)
+// );
 stream_prefetcher #(
     .addr_width_p(addr_width_p),
     .data_width_p(data_width_p)
@@ -740,8 +776,8 @@ stream_prefetcher #(
     .miss_addr_i(miss_address),
     .miss_v_i(miss),
     .dma_ready_i(~dma_busy_o), // Indicates DMA availability
-    .prefetch_dma_req_o(prefetch_dma_req),
-    .prefetch_dma_addr_o(prefetch_dma_addr),
+    .prefetch_dma_req_o(prefetch_dma_req_o), // Prefetch DMA request
+    .prefetch_dma_addr_o(prefetch_dma_addr_o), // Prefetch DMA address
     .cache_pkt_v_i(v_i),
     .cache_pkt_addr_i(cache_pkt_i[addr_width_p-1:0]),
     .prefetch_addr_o(prefetch_address),
@@ -1073,7 +1109,7 @@ end
       end
       else if (decode_v_r.tagla_op) begin
         data_o = {tag_v_r[addr_way_v], {(sets_p>1){addr_index_v}}, {(block_offset_width_lp){1'b0}}};
-      end
+      end 
       else if (decode_v_r.mask_op) begin
         data_o = ld_data_masked;
       end

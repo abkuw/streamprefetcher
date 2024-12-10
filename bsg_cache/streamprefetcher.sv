@@ -10,6 +10,7 @@ module stream_prefetcher #(
     input logic miss_v_i,//if miss is true
     input logic dma_pkt_v_i,
     input logic cache_pkt_v_i,
+    input logic dma_busy_i, // DMA busy signal
     input logic [addr_width_p-1:0] cache_pkt_addr_i,
     output logic [addr_width_p-1:0] prefetch_addr_o,
     output logic prefetch_v_o,
@@ -107,13 +108,20 @@ module stream_prefetcher #(
             UPDATE_STREAM: begin
                 if (stream_table[current_stream].miss_count == 2'd1) begin
                     next_state = PREFETCH;
+
+                    // Calculate stride and next prefetch address
                     stride = miss_addr_i - stream_table[current_stream].last_address;
                     next_prefetch_addr = miss_addr_i + stride;
-                    next_prefetch_v = 1'b1;
+
+                    // Extract tag and index for the DMA address
+                    next_prefetch_tag = next_prefetch_addr[addr_width_p-1 -: tag_width_lp];
+                    next_prefetch_index = next_prefetch_addr[block_offset_width_lp +: lg_sets_lp];
+
+                    next_prefetch_v = 1'b1; // Set the prefetch valid flag
                 end else begin
                     next_state = IDLE;
                 end
-            end
+            end            
 
             CREATE_STREAM: begin
                 for (int i = 0; i < STREAM_TABLE_SIZE; i++) begin
@@ -126,13 +134,31 @@ module stream_prefetcher #(
             end
 
             PREFETCH: begin
-                if (dma_ready_i && next_prefetch_v) begin
+                if (!dma_busy_i && dma_ready_i && next_prefetch_v) begin
                     // Initiate DMA request for the prefetch address
                     prefetch_dma_req_o = 1'b1;
-                    prefetch_dma_addr_o = next_prefetch_addr;
-                end
+
+                    // Construct the DMA address in the same format as bsg_cache_miss
+                    prefetch_dma_addr_o = {
+                        next_prefetch_tag,                     // Tag
+                        {(sets_p > 1) ? next_prefetch_index : {lg_sets_lp{1'b0}}}, // Index
+                        {(block_offset_width_lp){1'b0}}       // Block offset
+                    };
+
+                    // Update stream table for prefetch completion
+                    stream_table[current_stream].last_address = next_prefetch_addr;
+
+                    next_prefetch_v = 1'b0; // Clear the prefetch valid flag
+
+                // Return to IDLE state after issuing the prefetch
                 next_state = IDLE;
-            end            
+
+                end
+                and else begin
+                // Wait until DMA is free
+                next_state = PREFETCH;
+                end
+            end                       
 
             default: next_state = IDLE;
         endcase
@@ -162,7 +188,7 @@ module stream_prefetcher #(
                 prefetch_buffer_valid[current_stream] <= 1'b1;
             end
 
-            if (cache_pkt_v_i) begin
+            if (cache_pkt_v_i) begin  //provides the prefetched data to the cache and marks the buffer entry as invalid
                 for (int i = 0; i < STREAM_TABLE_SIZE; i++) begin
                     if (prefetch_buffer_valid[i] && (cache_pkt_addr_i == prefetch_buffer[i])) begin
                         prefetch_data_o <= prefetch_buffer[i];

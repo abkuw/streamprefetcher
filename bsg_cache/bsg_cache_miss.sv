@@ -57,7 +57,7 @@ module bsg_cache_miss
     ,output bsg_cache_dma_cmd_e dma_cmd_o
     ,output logic [lg_ways_lp-1:0] dma_way_o
     ,output logic [addr_width_p-1:0] dma_addr_o
-    ,output logic dma_busy_o; // track dma busy
+    ,output logic dma_busy_o // track dma busy
     ,input dma_done_i
 
     // to dma engine for flopping track_mem's read data
@@ -314,32 +314,60 @@ module bsg_cache_miss
       // Send out the missing cache block address (to read).
       // Choose a block to replace/fill.
       // If the chosen block is dirty, then take evict route.
+      // SEND_FILL_ADDR: begin
+
+      //   // Replacement Policy:
+      //   // If an invalid and unlocked way exists, pick that.
+      //   // If not, pick the LRU way. But if the LRU way designated 
+      //   // by stats_mem_info is locked, it will be overridden by 
+      //   // the bsg_lru_pseudo_tree_backup.
+      //   // On track miss, the chosen way is the tag hit way.
+      //   chosen_way_n = track_miss_i ? tag_hit_way_id_i : (invalid_exist ? invalid_way_id : lru_way_id);
+      
+      //   if (prefetch_dma_req_i) begin
+      //   // Handle prefetch DMA request
+      //   dma_cmd_o = e_dma_send_fill_addr;
+      //   dma_addr_o = prefetch_dma_addr_i;
+      //   // Reset prefetch_dma_req_i to indicate the request was serviced
+      //   end else begin
+      //   // Handle cache miss normally
+      //   dma_cmd_o = e_dma_send_fill_addr;
+      //   dma_addr_o = {
+      //       addr_tag_v,
+      //       {(sets_p > 1) ? addr_index_v},
+      //       {(block_offset_width_lp) {1'b0}}
+      //   };
+      //   end
+      //   miss_state_n = dma_done_i ? (stat_info_in.dirty[chosen_way_n] && valid_v_i[chosen_way_n] ? SEND_EVICT_ADDR : GET_FILL_DATA) : SEND_FILL_ADDR;
+      // end
+
       SEND_FILL_ADDR: begin
+          // Replacement Policy:
+          // If an invalid and unlocked way exists, pick that.
+          // If not, pick the LRU way. But if the LRU way designated 
+          // by stats_mem_info is locked, it will be overridden by 
+          // the bsg_lru_pseudo_tree_backup.
+          // On track miss, the chosen way is the tag hit way.
+          chosen_way_n = track_miss_i ? tag_hit_way_id_i : (invalid_exist ? invalid_way_id : lru_way_id);
 
-        // Replacement Policy:
-        // If an invalid and unlocked way exists, pick that.
-        // If not, pick the LRU way. But if the LRU way designated 
-        // by stats_mem_info is locked, it will be overridden by 
-        // the bsg_lru_pseudo_tree_backup.
-        // On track miss, the chosen way is the tag hit way.
-        chosen_way_n = track_miss_i ? tag_hit_way_id_i : (invalid_exist ? invalid_way_id : lru_way_id);
-
-        if (prefetch_dma_req_i) begin
-        // Handle prefetch DMA request
-        dma_cmd_o = e_dma_send_fill_addr;
-        dma_addr_o = prefetch_dma_addr_i;
-        // Reset prefetch_dma_req_i to indicate the request was serviced
-        end else begin
-        // Handle cache miss normally
-        dma_cmd_o = e_dma_send_fill_addr;
-        dma_addr_o = {
-            addr_tag_v,
-            {(sets_p > 1) ? addr_index_v},
-            {(block_offset_width_lp) {1'b0}}
-        };
-        end
-        miss_state_n = dma_done_i ? (stat_info_in.dirty[chosen_way_n] && valid_v_i[chosen_way_n] ? SEND_EVICT_ADDR : GET_FILL_DATA) : SEND_FILL_ADDR;
+          if (!dma_busy_o) begin
+              if (prefetch_dma_req_i) begin
+                  // Handle prefetch DMA request
+                  dma_cmd_o = e_dma_send_fill_addr;
+                  dma_addr_o = prefetch_dma_addr_i;
+              end else begin
+                  // Handle cache miss normally
+                  dma_cmd_o = e_dma_send_fill_addr;
+                  dma_addr_o = {
+                      addr_tag_v,
+                      {(sets_p > 1) ? addr_index_v},
+                      {(block_offset_width_lp) {1'b0}}
+                  };
+              end
+          end
+          miss_state_n = dma_done_i ? (stat_info_in.dirty[chosen_way_n] && valid_v_i[chosen_way_n] ? SEND_EVICT_ADDR : GET_FILL_DATA) : SEND_FILL_ADDR;
       end
+     
 
         // dma_cmd_o = e_dma_send_fill_addr;          
         // dma_addr_o = {
