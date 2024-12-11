@@ -142,9 +142,7 @@ module testbench();
     ,.dma_data_o(dma_data_lo)
     ,.dma_data_v_o(dma_data_v_lo)
     ,.dma_data_yumi_i(dma_data_yumi_li)
-
-    ,.miss_address(miss_address)
-    ,.miss(miss)
+    ,.v_we_o(v_we_o)
   );
 
   // random yumi generator

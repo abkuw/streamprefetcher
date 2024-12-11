@@ -73,6 +73,15 @@ module bsg_cache_dma
     ,input [ways_p-1:0][block_size_in_words_p-1:0] track_mem_data_i
 
     ,output logic dma_evict_o // data eviction in progress
+    ,output logic entire_line_v_o
+    ,output logic [data_width_p*block_size_in_words_p-1:0] entire_line_o
+
+    // New output ports to expose internal signals
+    // ,logic in_fifo_v_lo_o
+    // ,logic [dma_data_width_p-1:0] in_fifo_data_lo_o
+    // ,logic in_fifo_yumi_li_o
+    // ,logic [1:0] dma_state_r_o
+    // ,logic [counter_width_lp-1:0] counter_r_o
   );
 
   // localparam
@@ -120,10 +129,10 @@ module bsg_cache_dma
 
   // in fifo
   //
-  logic in_fifo_v_lo;
+   logic in_fifo_v_lo;
   logic [dma_data_width_p-1:0] in_fifo_data_lo;
   logic in_fifo_yumi_li;
-
+  
   bsg_fifo_1r1w_small #(
     .width_p(dma_data_width_p)
     ,.els_p((burst_len_lp<2) ? 2 : burst_len_lp)
@@ -369,6 +378,13 @@ module bsg_cache_dma
     endcase
   end
 
+// assign in_fifo_v_lo_o = in_fifo_v_lo;
+// assign in_fifo_data_lo_o = in_fifo_data_lo;
+// assign in_fifo_yumi_li_o = in_fifo_yumi_li;
+// assign dma_state_r_o = dma_state_r;
+// assign counter_r_o = counter_r;
+
+
   
   // snoop_word register
   // As the fill data is coming in, grab the word that matches the block
@@ -402,23 +418,50 @@ module bsg_cache_dma
     ,.data_o(snoop_word_n)
   );
 
+  logic [data_width_p-1:0] entire_line_buf [0:block_size_in_words_p-1];
    // synopsys sync_set_reset "reset_i"
-  always_ff @ (posedge clk_i) begin
-    if (reset_i) begin
-      dma_state_r <= IDLE;
+  // always_ff @ (posedge clk_i) begin
+  //   if (reset_i) begin
+  //     dma_state_r <= IDLE;
+  //   end
+  //   else begin
+  //     dma_state_r <= dma_state_n;
+
+  //     if (snoop_word_we) begin
+  //       snoop_word_o <= snoop_word_n;
+  //     end 
+
+  //     if (track_data_we_i) begin
+  //       track_mem_data_r <= track_mem_data_i;
+  //     end
+  //   end
+  // end
+  always_ff @(posedge clk_i) begin
+  if (reset_i) begin
+    entire_line_v_o <= 1'b0;
+    for (int i = 0; i < block_size_in_words_p; i++)
+      entire_line_buf[i] <= '0;
+  end else begin
+    entire_line_v_o <= 1'b0;
+
+    // When receiving words in GET_FILL_DATA:
+    if (dma_state_r == GET_FILL_DATA && in_fifo_v_lo && in_fifo_yumi_li) begin
+      entire_line_buf[counter_r] <= in_fifo_data_lo[data_width_p-1:0]; 
+      // Assuming dma_data_width_p == data_width_p for simplicity.
     end
-    else begin
-      dma_state_r <= dma_state_n;
 
-      if (snoop_word_we) begin
-        snoop_word_o <= snoop_word_n;
-      end 
-
-      if (track_data_we_i) begin
-        track_mem_data_r <= track_mem_data_i;
+    // When we finish GET_FILL_DATA and return to IDLE, pack the entire line
+    // This happens when done_o is asserted at GET_FILL_DATA completion
+    if (dma_state_r == GET_FILL_DATA && dma_state_n == IDLE && done_o) begin
+      // Pack entire_line_o from entire_line_buf
+      for (int i = 0; i < block_size_in_words_p; i++) begin
+        entire_line_o[i*data_width_p+:data_width_p] = entire_line_buf[i];
       end
+      entire_line_v_o <= 1'b1;
     end
   end
+end
+
 
 `ifndef BSG_HIDE_FROM_SYNTHESIS
   

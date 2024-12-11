@@ -53,11 +53,16 @@ module bsg_cache_miss
     // from track buffer
     ,input tbuf_empty_i
 
+    // Prefetch interface
+    ,input prefetch_dma_req_i
+    ,input [addr_width_p-1:0] prefetch_dma_addr_i
+    ,output logic [data_width_p-1:0] dma_prefetch_data_o
+    ,output logic dma_prefetch_data_v_o
+
     // to dma engine
     ,output bsg_cache_dma_cmd_e dma_cmd_o
     ,output logic [lg_ways_lp-1:0] dma_way_o
     ,output logic [addr_width_p-1:0] dma_addr_o
-    ,output logic dma_busy_o // track dma busy
     ,input dma_done_i
 
     // to dma engine for flopping track_mem's read data
@@ -93,9 +98,17 @@ module bsg_cache_miss
     ,output logic recover_o
     ,output logic [lg_ways_lp-1:0] chosen_way_o
     ,output logic select_snoop_data_r_o
-
     ,input ack_i
+
+    // DMA busy signal
+    ,output logic dma_busy_o
+    //lines from DMA
+    ,input entire_line_v_i
+    ,input [data_width_p*block_size_in_words_p-1:0] entire_line_i
   );
+
+  
+    
 
   // stat/tag info
   //
@@ -127,6 +140,15 @@ module bsg_cache_miss
     ,.addr_o(invalid_way_id)
     ,.v_o(invalid_exist)
   );
+
+  // Prefetched line signals
+  logic prefetched_line_ready_r, prefetched_line_ready_n;
+  logic [data_width_p-1:0] prefetch_buffer [block_size_in_words_p];
+  logic [data_width_p*block_size_in_words_p-1:0] prefetched_line_data_r, prefetched_line_data_n;
+  logic [data_width_p*block_size_in_words_p-1:0] entire_line;
+
+  assign dma_prefetch_data_o = prefetched_line_data_r;
+  assign dma_prefetch_data_v_o = prefetched_line_ready_r;
 
   // miss handler FSM
   //
@@ -265,6 +287,16 @@ module bsg_cache_miss
 
   assign select_snoop_data_r_o = select_snoop_data_r;
 
+
+
+  always_comb begin
+    for (int j = 0; j < block_size_in_words_p; j++) begin
+      entire_line[j*data_width_p+:data_width_p] = prefetch_buffer[j];
+    end
+  end
+  
+
+
   always_comb begin
 
     stat_mem_v_o = 1'b0;
@@ -292,6 +324,8 @@ module bsg_cache_miss
     done_o = '0;
 
     select_snoop_data_n = select_snoop_data_r;
+    prefetched_line_ready_n = 1'b0;
+    prefetched_line_data_n = prefetched_line_data_r;
 
     case (miss_state_r)
 
@@ -314,74 +348,37 @@ module bsg_cache_miss
       // Send out the missing cache block address (to read).
       // Choose a block to replace/fill.
       // If the chosen block is dirty, then take evict route.
-      // SEND_FILL_ADDR: begin
-
-      //   // Replacement Policy:
-      //   // If an invalid and unlocked way exists, pick that.
-      //   // If not, pick the LRU way. But if the LRU way designated 
-      //   // by stats_mem_info is locked, it will be overridden by 
-      //   // the bsg_lru_pseudo_tree_backup.
-      //   // On track miss, the chosen way is the tag hit way.
-      //   chosen_way_n = track_miss_i ? tag_hit_way_id_i : (invalid_exist ? invalid_way_id : lru_way_id);
-      
-      //   if (prefetch_dma_req_i) begin
-      //   // Handle prefetch DMA request
-      //   dma_cmd_o = e_dma_send_fill_addr;
-      //   dma_addr_o = prefetch_dma_addr_i;
-      //   // Reset prefetch_dma_req_i to indicate the request was serviced
-      //   end else begin
-      //   // Handle cache miss normally
-      //   dma_cmd_o = e_dma_send_fill_addr;
-      //   dma_addr_o = {
-      //       addr_tag_v,
-      //       {(sets_p > 1) ? addr_index_v},
-      //       {(block_offset_width_lp) {1'b0}}
-      //   };
-      //   end
-      //   miss_state_n = dma_done_i ? (stat_info_in.dirty[chosen_way_n] && valid_v_i[chosen_way_n] ? SEND_EVICT_ADDR : GET_FILL_DATA) : SEND_FILL_ADDR;
-      // end
-
       SEND_FILL_ADDR: begin
-          // Replacement Policy:
-          // If an invalid and unlocked way exists, pick that.
-          // If not, pick the LRU way. But if the LRU way designated 
-          // by stats_mem_info is locked, it will be overridden by 
-          // the bsg_lru_pseudo_tree_backup.
-          // On track miss, the chosen way is the tag hit way.
+
+        // Replacement Policy:
+        // If an invalid and unlocked way exists, pick that.
+        // If not, pick the LRU way. But if the LRU way designated 
+        // by stats_mem_info is locked, it will be overridden by 
+        // the bsg_lru_pseudo_tree_backup.
+        // On track miss, the chosen way is the tag hit way.
+       // Prefetch handling:
+        if (prefetch_dma_req_i && ~dma_busy_o) begin
+          // handle prefetch line first
+          dma_cmd_o = e_dma_send_fill_addr;
+          dma_addr_o = prefetch_dma_addr_i;
+          miss_state_n = dma_done_i
+            ? GET_FILL_DATA
+            : SEND_FILL_ADDR;
+        end else begin
+          // normal miss fill
           chosen_way_n = track_miss_i ? tag_hit_way_id_i : (invalid_exist ? invalid_way_id : lru_way_id);
-
-          if (!dma_busy_o) begin
-              if (prefetch_dma_req_i) begin
-                  // Handle prefetch DMA request
-                  dma_cmd_o = e_dma_send_fill_addr;
-                  dma_addr_o = prefetch_dma_addr_i;
-              end else begin
-                  // Handle cache miss normally
-                  dma_cmd_o = e_dma_send_fill_addr;
-                  dma_addr_o = {
-                      addr_tag_v,
-                      {(sets_p > 1) ? addr_index_v},
-                      {(block_offset_width_lp) {1'b0}}
-                  };
-              end
-          end
-          miss_state_n = dma_done_i ? (stat_info_in.dirty[chosen_way_n] && valid_v_i[chosen_way_n] ? SEND_EVICT_ADDR : GET_FILL_DATA) : SEND_FILL_ADDR;
-      end
-     
-
-        // dma_cmd_o = e_dma_send_fill_addr;          
-        // dma_addr_o = {
-        //   addr_tag_v,
-        //   {(sets_p>1){addr_index_v}},
-        //   {(block_offset_width_lp){1'b0}}
-        // };
-
-        // if the chosen way is dirty and valid, then evict.
-        miss_state_n = dma_done_i
-          ? ((~track_miss_i & stat_info_in.dirty[chosen_way_n] & valid_v_i[chosen_way_n])
-            ? SEND_EVICT_ADDR
-            : GET_FILL_DATA)
-          : SEND_FILL_ADDR;
+          dma_cmd_o = e_dma_send_fill_addr;
+          dma_addr_o = {
+            addr_tag_v,
+            {(sets_p>1){addr_index_v}},
+            {(block_offset_width_lp){1'b0}}
+          };
+          miss_state_n = dma_done_i
+            ? ((~track_miss_i & stat_info_in.dirty[chosen_way_n] & valid_v_i[chosen_way_n])
+              ? SEND_EVICT_ADDR
+              : GET_FILL_DATA)
+            : SEND_FILL_ADDR;
+        end
       end
 
       // Handling the cases for TAGFL, AINV, AFL, AFLINV.
@@ -508,6 +505,7 @@ module bsg_cache_miss
           {(block_size_in_words_p > 1){addr_block_offset_v}}, // used for snoop data in dma.
           {(lg_data_mask_width_lp){1'b0}}
         };
+        
 
         // For store tag miss, set the dirty bit for the chosen way.
         // For load tag miss, clear the dirty bit for the chosen way.
@@ -548,9 +546,58 @@ module bsg_cache_miss
           ? 1'b1
           : select_snoop_data_r;
 
-        miss_state_n = dma_done_i
-          ? RECOVER
-          : GET_FILL_DATA;
+        // Each time you receive a word (in_fifo_v_lo & in_fifo_yumi_li), store it in prefetch_buffer
+        // NOTE: Ensure you have logic that sets in_fifo_yumi_li = in_fifo_v_lo (or equivalent),
+        // and increments counter_r as each word is received.
+        // if ((dma_state_r == GET_FILL_DATA) && in_fifo_v_lo && in_fifo_yumi_li) begin
+        //   prefetch_buffer[counter_r] = in_fifo_data_lo;
+        // end
+
+        // Once dma_done_i asserts, we have the entire line in prefetch_buffer.
+        // Concatenate all words into a single vector entire_line.
+        
+
+        // Use a generate-for or an always_comb block outside for clean concatenation:
+        // For simplicity, we do it inline if block_size_in_words_p is small and known.
+        // If you need a generic solution:
+        // Declare a separate always_comb block outside this always_comb to build entire_line:
+
+        // Example (if block_size_in_words_p is known):
+        // entire_line = {prefetch_buffer[0], prefetch_buffer[1], ..., prefetch_buffer[block_size_in_words_p-1]};
+
+        // Generic solution using a for loop:
+        // Put this logic in an always_comb block outside the state machine:
+        // always_comb begin
+        //   for (int j = 0; j < block_size_in_words_p; j++) begin
+        //     entire_line[j*data_width_p+:data_width_p] = prefetch_buffer[j];
+        //   end
+        // end
+
+        // Then, once dma_done_i is high:
+        // if (dma_done_i) begin
+        //   prefetched_line_ready_n = 1'b1;
+        //   prefetched_line_data_n = entire_line; // entire_line built from prefetch_buffer
+        //     miss_state_n = RECOVER;
+        // end else begin
+        //   miss_state_n = GET_FILL_DATA;
+        // end
+
+        if (dma_done_i) begin
+          if (entire_line_v_i) begin
+            prefetched_line_ready_n = 1'b1;
+            prefetched_line_data_n = entire_line_i; // Use the full line from DMA
+            miss_state_n = RECOVER;
+          end else begin
+            // If entire_line_v_i is not set yet, you may choose to wait or handle differently.
+            // Typically, entire_line_v_i should align with dma_done_i.
+            miss_state_n = GET_FILL_DATA; 
+          end
+        end else begin
+          miss_state_n = GET_FILL_DATA;
+        end
+
+        // Prefetch logic: Once dma_done_i, set prefetched_line_ready for one cycle.
+        // This indicates that we've got a prefetched line ready.
       end
 
       STORE_TAG_MISS: begin
@@ -614,7 +661,7 @@ module bsg_cache_miss
 
     endcase
   end
-
+  assign dma_busy_o = (miss_state_r != START && miss_state_r != DONE);
   // synopsys sync_set_reset "reset_i"
   always_ff @ (posedge clk_i) begin
     if (reset_i) begin
@@ -624,6 +671,9 @@ module bsg_cache_miss
       select_snoop_data_r <= 1'b0;
       // added to be a little more X pessimism conservative
       track_data_we_o <= 1'b0;
+      //prefetch lines
+      prefetched_line_ready_r <= 1'b0;
+      prefetched_line_data_r <= '0;
     end
     else begin
       miss_state_r <= miss_state_n;
@@ -631,11 +681,11 @@ module bsg_cache_miss
       flush_way_r <= flush_way_n;
       select_snoop_data_r <= select_snoop_data_n;
       track_data_we_o <= track_mem_v_o & ~track_mem_w_o;
+      //prefetch line change logic
+      prefetched_line_ready_r <= prefetched_line_ready_n;
+      prefetched_line_data_r <= prefetched_line_data_n;
     end
   end
-
-// Assign dma_busy_o signal
-assign dma_busy_o = (miss_state_r != START && miss_state_r != DONE);
 
 endmodule
 
