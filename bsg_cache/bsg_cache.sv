@@ -444,6 +444,7 @@ end
     ,.prefetch_dma_addr_o(prefetch_dma_addr)
     ,.prefetch_data_o(prefetch_data)
     ,.prefetch_data_v_o(prefetch_data_v)
+    ,.store_clean_req_i(1'b0)
   );
  
   // miss handler
